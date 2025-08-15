@@ -1,21 +1,21 @@
 import streamlit as st
 import pandas as pd
-import openai
 import csv
 import io
+from openai import OpenAI
 
-# Hugging Face token equivalent: OpenAI API key from Streamlit secrets
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# Initialize OpenAI client
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# Function to query OpenAI GPT
+# Function to query GPT
 def query_gpt(prompt, temperature):
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
         max_tokens=1024
     )
-    return response['choices'][0]['message']['content']
+    return response.choices[0].message.content
 
 # Function to parse AI output into DataFrame
 def parse_to_csv(ai_text):
