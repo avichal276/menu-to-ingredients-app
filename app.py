@@ -1,116 +1,56 @@
 import streamlit as st
-import pandas as pd
 import requests
-import json
-import datetime
-import io
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
-import tempfile
-import os
 
-# Load API keys & Google Drive settings
-HF_API_KEY = st.secrets["HF_API_KEY"]
-GDRIVE_CREDENTIALS_JSON = st.secrets["gdrive"]["credentials_json"]
-GDRIVE_FOLDER_NAME = st.secrets["gdrive"]["folder_name"]
+# Primary and fallback models
+PRIMARY_MODEL = "google/flan-t5-base"
+FALLBACK_MODEL = "bigscience/bloomz-560m"
 
-# Hugging Face Model
-HF_MODEL = "tiiuae/falcon-7b-instruct"  # You can change this to another free model
+# Hugging Face API key from Streamlit secrets
+HF_API_KEY = st.secrets.get("HF_API_KEY", None)
+if HF_API_KEY is None:
+    st.error("Please set your Hugging Face API key in Streamlit secrets as HF_API_KEY")
+    st.stop()
 
-st.set_page_config(page_title="Menu → Ingredients App", layout="centered")
-st.title("🍽️ Menu → Ingredients + QC Generator")
+headers = {"Authorization": f"Bearer {HF_API_KEY}"}
 
-st.write("Upload your restaurant menu and get a detailed list of ingredients, quantities, and quality check parameters.")
-
-# File uploader
-uploaded_file = st.file_uploader("Upload menu file (TXT, CSV, XLSX)", type=["txt", "csv", "xlsx"])
-
-# Hugging Face API call
-def query_hf(prompt):
-    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-    payload = {"inputs": prompt}
-    response = requests.post(f"https://api-inference.huggingface.co/models/{HF_MODEL}", headers=headers, json=payload)
+def query_huggingface(model, payload):
+    """Query the Hugging Face Inference API."""
+    url = f"https://api-inference.huggingface.co/models/{model}"
+    response = requests.post(url, headers=headers, json=payload)
+    
     if response.status_code == 200:
-        return response.json()[0]["generated_text"]
+        return response.json()
     else:
-        st.error(f"Hugging Face API error: {response.text}")
+        st.warning(f"Model {model} failed: {response.text}")
         return None
 
-# Google Drive authentication
-def init_gdrive():
-    with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".json") as temp_json:
-        temp_json.write(GDRIVE_CREDENTIALS_JSON)
-        temp_json_path = temp_json.name
+def get_model_output(prompt):
+    """Try primary model, then fallback model."""
+    # Try primary model
+    output = query_huggingface(PRIMARY_MODEL, {"inputs": prompt})
+    if output:
+        return output
 
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile(temp_json_path)
-    if not gauth.credentials:
-        gauth.LocalWebserverAuth()
-    drive = GoogleDrive(gauth)
+    # If failed, try fallback model
+    output = query_huggingface(FALLBACK_MODEL, {"inputs": prompt})
+    if output:
+        return output
 
-    # Ensure folder exists
-    folder_list = drive.ListFile({'q': f"title='{GDRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false"}).GetList()
-    if folder_list:
-        folder_id = folder_list[0]['id']
+    # If both fail
+    st.error("Both primary and fallback models failed. Please check your API key and internet connection.")
+    return None
+
+# Streamlit UI
+st.title("Menu → Ingredients with AI")
+
+menu_text = st.text_area("Paste your restaurant menu here:")
+if st.button("Generate Ingredients"):
+    if not menu_text.strip():
+        st.warning("Please paste a menu first.")
     else:
-        folder = drive.CreateFile({'title': GDRIVE_FOLDER_NAME, 'mimeType': 'application/vnd.google-apps.folder'})
-        folder.Upload()
-        folder_id = folder['id']
-    return drive, folder_id
-
-# Save file to Google Drive
-def save_to_gdrive(file_content, filename):
-    drive, folder_id = init_gdrive()
-    file_drive = drive.CreateFile({'title': filename, 'parents': [{'id': folder_id}]})
-    file_drive.SetContentString(file_content)
-    file_drive.Upload()
-    return f"https://drive.google.com/file/d/{file_drive['id']}/view?usp=sharing"
-
-if uploaded_file:
-    # Read uploaded file
-    if uploaded_file.name.endswith(".txt"):
-        menu_text = uploaded_file.read().decode("utf-8")
-    elif uploaded_file.name.endswith(".csv"):
-        df_menu = pd.read_csv(uploaded_file)
-        menu_text = "\n".join(df_menu.iloc[:, 0].astype(str).tolist())
-    else:
-        df_menu = pd.read_excel(uploaded_file)
-        menu_text = "\n".join(df_menu.iloc[:, 0].astype(str).tolist())
-
-    st.subheader("📋 Menu Preview")
-    st.text(menu_text)
-
-    if st.button("Generate Ingredients & QC Parameters"):
-        with st.spinner("Processing with AI..."):
-            prompt = f"""
-            You are a chef and food safety expert. For the following restaurant menu, return a table with:
-            - Ingredient Name
-            - Quantity per serving (approximate)
-            - Quality Check Parameters (freshness, size, smell, etc.)
-            Menu:
-            {menu_text}
-            """
-            ai_response = query_hf(prompt)
-            if ai_response:
-                try:
-                    # Try to convert AI output into DataFrame
-                    df_result = pd.read_csv(io.StringIO(ai_response))
-                except:
-                    # If AI output is not CSV, just display text
-                    st.text(ai_response)
-                    df_result = pd.DataFrame({"AI Output": [ai_response]})
-
-                st.subheader("✅ Generated Ingredients List")
-                st.dataframe(df_result)
-
-                # Save to CSV
-                csv_data = df_result.to_csv(index=False)
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"ingredients_output_{timestamp}.csv"
-
-                # Download button
-                st.download_button("⬇ Download CSV", csv_data, file_name=filename, mime="text/csv")
-
-                # Save to Google Drive
-                drive_link = save_to_gdrive(csv_data, filename)
-                st.markdown(f"✅ **Saved to Google Drive:** [Open File]({drive_link})", unsafe_allow_html=True)
+        with st.spinner("Processing menu..."):
+            prompt = f"Given this restaurant menu:\n{menu_text}\nList ingredients with quantities and quality checks for each dish."
+            result = get_model_output(prompt)
+            if result:
+                st.subheader("Generated Output")
+                st.write(result)
