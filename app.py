@@ -3,18 +3,22 @@ import requests
 import pandas as pd
 import io
 
-# Load Hugging Face API key
+# Load Hugging Face API key from Streamlit secrets
 HF_API_KEY = st.secrets["HF_API_KEY"]
 
-# Use a free, public model
-HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
-API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+# List of free/public Hugging Face models to choose from
+MODEL_OPTIONS = {
+    "Mistral 7B Instruct": "mistralai/Mistral-7B-Instruct-v0.2",
+    "Falcon 7B Instruct": "tiiuae/falcon-7b-instruct",
+    "OpenAssistant LLaMA 7B": "OpenAssistant/oasst-sft-7-llama-30b-xor",
+    "GPT-J 6B": "EleutherAI/gpt-j-6B"
+}
 
-headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-
-def query_hf_model(prompt, temperature):
+def query_hf_model(prompt, model_name, temperature):
+    api_url = f"https://api-inference.huggingface.co/models/{model_name}"
+    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
     try:
-        response = requests.post(API_URL, headers=headers, json={
+        response = requests.post(api_url, headers=headers, json={
             "inputs": prompt,
             "parameters": {"temperature": temperature}
         })
@@ -31,9 +35,11 @@ def query_hf_model(prompt, temperature):
 
 st.title("📋 Menu → Ingredients & Quality Parameters")
 
-uploaded_file = st.file_uploader("Upload your restaurant menu (TXT or CSV)", type=["txt", "csv"])
+# Model selection
+selected_model_name = st.selectbox("Choose AI Model", list(MODEL_OPTIONS.keys()))
+selected_model_id = MODEL_OPTIONS[selected_model_name]
 
-# Slider for temperature
+# Temperature slider
 temperature = st.slider(
     "AI Creativity (Lower = More Structured CSV, Higher = More Creative)",
     min_value=0.0,
@@ -41,6 +47,9 @@ temperature = st.slider(
     value=0.3,
     step=0.1
 )
+
+# File uploader
+uploaded_file = st.file_uploader("Upload your restaurant menu (TXT or CSV)", type=["txt", "csv"])
 
 if uploaded_file:
     if uploaded_file.type == "text/plain":
@@ -63,7 +72,7 @@ if uploaded_file:
     """
 
     if st.button("Generate Ingredients & Quality Parameters"):
-        output_text = query_hf_model(prompt, temperature)
+        output_text = query_hf_model(prompt, selected_model_id, temperature)
 
         try:
             df_output = pd.read_csv(io.StringIO(output_text))
