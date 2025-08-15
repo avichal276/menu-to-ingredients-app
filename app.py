@@ -1,99 +1,73 @@
 import streamlit as st
 import pandas as pd
 import requests
+import csv
 import io
 
-# ---------------------------
-# STREAMLIT APP CONFIG
-# ---------------------------
-st.set_page_config(page_title="Menu to Ingredients", layout="centered")
-st.title("🍽️ Menu to Ingredients List")
+# Hugging Face API key from Streamlit secrets
+HF_API_KEY = st.secrets["HF_API_KEY"]
 
-# ---------------------------
-# SETTINGS
-# ---------------------------
-HF_API_KEY = st.secrets["HF_API_KEY"]  # Add your key in Streamlit secrets
-
-MODEL_OPTIONS = {
-    "Mistral-7B": "mistralai/Mistral-7B-Instruct-v0.2",
-    "Falcon-7B": "tiiuae/falcon-7b-instruct"
+# Hugging Face Model API URLs
+API_URLS = {
+    "Zephyr-7B": "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-alpha",  # public, no approval
+    "Mistral-7B": "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",  # needs approval
+    "Falcon-7B": "https://api-inference.huggingface.co/models/tiiuae/falcon-7b-instruct"  # needs approval
 }
 
-# ---------------------------
-# FUNCTION TO CALL HUGGING FACE
-# ---------------------------
-def query_hf(model_id, prompt, temperature):
-    api_url = f"https://api-inference.huggingface.co/models/{model_id}"
+# Query Hugging Face Inference API
+def query_hf(payload, model_choice):
     headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "temperature": temperature,
-            "max_new_tokens": 1024,
-            "return_full_text": False
-        }
-    }
-
-    response = requests.post(api_url, headers=headers, json=payload)
+    API_URL = API_URLS[model_choice]
+    response = requests.post(API_URL, headers=headers, json=payload)
     if response.status_code != 200:
-        return f"Error from Hugging Face: {response.text}"
-    
+        return None, f"Error from Hugging Face: {response.status_code} - {response.text}"
     try:
-        return response.json()[0]["generated_text"]
+        return response.json()[0]["generated_text"], None
+    except Exception as e:
+        return None, f"Error parsing response: {e}"
+
+# Convert AI output to DataFrame
+def parse_to_csv(ai_text):
+    try:
+        reader = csv.reader(io.StringIO(ai_text), delimiter=",")
+        rows = list(reader)
+        if len(rows) < 2:
+            return None
+        df = pd.DataFrame(rows[1:], columns=rows[0])
+        return df
     except Exception:
-        return "Error: Could not parse model response"
+        return None
 
-# ---------------------------
-# USER INPUTS
-# ---------------------------
-uploaded_file = st.file_uploader("📤 Upload your menu file (.txt or .csv)", type=["txt", "csv"])
-model_choice = st.selectbox("🤖 Choose AI Model", list(MODEL_OPTIONS.keys()))
-temperature = st.slider("🎨 Creativity (Temperature)", 0.0, 1.0, 0.3, 0.1)
+# Streamlit UI
+st.title("Menu → Ingredients Converter")
 
-# ---------------------------
-# PROCESSING
-# ---------------------------
+uploaded_file = st.file_uploader("Upload your menu (TXT or CSV)", type=["txt", "csv"])
+model_choice = st.selectbox("Choose AI Model", ["Zephyr-7B", "Mistral-7B", "Falcon-7B"], index=0)
+temperature = st.slider("Creativity (temperature)", 0.0, 1.0, 0.7)
+
 if uploaded_file is not None:
-    if st.button("Generate Ingredients List"):
-        # Read menu content
-        if uploaded_file.name.endswith(".txt"):
-            menu_text = uploaded_file.read().decode("utf-8")
-        else:
-            df_menu = pd.read_csv(uploaded_file)
-            menu_text = "\n".join(df_menu.iloc[:, 0].astype(str))
+    file_content = uploaded_file.read().decode("utf-8")
 
-        # Create prompt
+    if st.button("Process"):
         prompt = f"""
-        You are a chef's assistant.
-        For each menu item listed below, output a CSV table with:
-        Item Name, Ingredients, Quantity (with units), Quality Check Parameters.
+        You are a helpful assistant. Convert the following menu items into a CSV table with columns: Item, Ingredients.
+        Be concise and accurate.
 
         Menu:
-        {menu_text}
-
-        Output format:
-        Item Name, Ingredients, Quantity, Quality Check Parameters
+        {file_content}
         """
+        ai_output, error = query_hf({"inputs": prompt, "parameters": {"temperature": temperature}}, model_choice)
 
-        # Get AI output
-        model_id = MODEL_OPTIONS[model_choice]
-        ai_output = query_hf(model_id, prompt, temperature)
-
-        # Try parsing into CSV
-        try:
-            df = pd.read_csv(io.StringIO(ai_output))
-            st.success("✅ Parsed AI output into table")
-            st.dataframe(df)
-
-            # Download button
-            csv_bytes = df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="📥 Download Ingredients CSV",
-                data=csv_bytes,
-                file_name="ingredients_list.csv",
-                mime="text/csv"
-            )
-        except Exception:
-            st.warning("⚠️ Could not parse AI output into table. Showing raw text:")
-            st.text(ai_output)
+        if error:
+            st.error(error)
+        elif ai_output:
+            df = parse_to_csv(ai_output)
+            if df is not None:
+                st.success("Here’s your parsed table:")
+                st.dataframe(df)
+                csv_buf = io.StringIO()
+                df.to_csv(csv_buf, index=False)
+                st.download_button("Download CSV", csv_buf.getvalue(), "ingredients.csv", "text/csv")
+            else:
+                st.warning("Couldn’t parse into table. Showing raw output instead:")
+                st.text(ai_output)
